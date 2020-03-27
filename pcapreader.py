@@ -1,100 +1,105 @@
-from ipwhois import IPWhois as ipw
-import pprint
-import socket
 import sys
-from collections import OrderedDict
+import os
 
+files = ["test.pcapng"]
 
-entries = {}
-pp = pprint.PrettyPrinter(indent=4)
+p_type = {  17:'tcp',
+            6:'udp direct',
+            1:'udp broadcast',
+            3:'multicast',
+          }
 
+open_files = []
+t = None
 
-class MyIPW:
-    def __init__(self, ip=None):
-        self.ip = ip
-        self.obj = None
+class PCapFile():
+    def __init__(self, filename):
+        self.filename = filename
+        self.format = filename.split('.')[1]
+        self.data = None
+        self.data_header = None
         self.valid = True
-        self.rtn = None
-        try:
-            self.obj = ipw(ip)
-        except:
-            print("*** Could not create IPWhois object. Bad IP address.\n")
-            self.valid = False
+        self.p_count = 0
+        self.packets = []
 
-    def lookup(self):
-        try:
-            self.rtn = self.obj.lookup_rdap(asn_methods=['http','whois','dns'], get_asn_description=True)
-            return self.rtn
-        except:
-            print(self.ip, "lookup_rdap() failed.\n")
+        self.open_pcap()
 
+    def parse_pcap(self):
+        i = 0x16c
+        self.data_header = self.data[:i]
+        next_len = round_up(hex_byteary_to_sum(self.data_header[-4:]), 4)
 
-def run_input():
-    while(True):
-        print("Enter IP Address:")
-        ip_input = input(">  ")
-        if ip_input.lower() in ["exit", "quit", "done", "back", "end", "main"]:
-            break 
-        try:
-            rtn = None
-            socket.inet_aton(ip_input)
-
-            if ip_input not in entries.keys():
-                entry = MyIPW(ip_input)
-                if entry.valid:
-                    rtn = entry.lookup()
-                    if entry.rtn is not None:
-                        entries[ip_input] = entry
-                        print("---   ", entry.rtn['asn_description'], "  |  ", entry.rtn['entities'], "\n")
-                    else:
-                        pass
-            else:
-                print("*** An entry already exists using this IP address.\n")
-        except socket.error:
-            print("*** socket.inet_aton error - bad IP address.\n")
-
-run_input()
+        while i < len(self.data):
+            print("{0}.  {1}, {2}".format(self.p_count, hex(i), next_len))
+            self.packets.append(Packet(self.data[i:i+next_len+32], self.p_count))
+            i += next_len + 32
+            next_len = round_up(hex_byteary_to_sum(self.packets[self.p_count].data[-4:]), 4)
+            self.p_count += 1
 
 
+    def open_pcap(self):
+        if os.path.exists(self.filename):
+            with open(self.filename, 'r+b') as f:
+                try:
+                    self.data = bytearray(f.read())
+                except IOError as e:
+                    print("*** I/O error({0}): {1}.\n".format(e.errno, e.strerror))
+                    self.valid = False
+                except:
+                    print("*** Unexpected error:", sys.exc_info()[0], "\n")
+                    print("*** PCapReader failed to open file \'", self.filename,"\'.\n")
+                    self.valid = False
+        if self.valid:
+            self.parse_pcap()
 
-            
-def show_names():
-    for k, v in entries.items():
-        print("---   ", k, "  |  ", v.rtn['asn_description'], "  |  ", v.rtn['entities'] )
+class Packet():
+    def __init__(self, data, p_index):
+        self.data = data
+        self.length = len(data)
+        self.protocol = int(data[23])
+        self.p_index = p_index
+        self.src_mac = data[:6]
+        self.dst_mac = data[6:12]
+        self.src_ip = b_to_ipaddr(data[26:30])
+        self.dst_ip = b_to_ipaddr(data[30:34])
+        self.src_port = hex_byteary_to_sum(data[36:34:-1])
+        self.dst_port = hex_byteary_to_sum(data[38:36:-1])
+        self.src_isweb = False
+        self.dst_isweb = False
 
-def show_defined_kv(k, v, key):
-    print("---   ", k, "  |  ")
-    pp.pprint(v.rtn[key])
-    print("\n")
+def b_to_ipaddr(data):
+    a = []
+    d = '.'
+    for c in data:
+        a.append(str(c))
+    d = d.join(a)
+    #print(d)
+    return d
 
-def show_all_data(k, v):
-    print("\n---   ", k, "\n")
-    pp.pprint(v.rtn)
-    print("\n")
+def b_to_int(data):
+    t = 0
+    n = 1
+    for c in data:
+        t += n * c
+        n *= 256
+    return t
 
-def show_by_ip(ip, key):
-    obj = entries[ip]
-    #all keys
-    if key == None:
-        show_all_data(ip, obj)
-    #specific key provided, found in rtn data
-    elif key in obj.rtn.keys():
-        show_defined_kv(ip, obj, key)
-    #specific key provided, but key not found in rtn data
-    else:
-        print("*** Return data for entry  ", ip, "  does not contain key < ", key, " >.\n") 
+def round_up(i, base):
+    i += (base - (i % base)) % base
+    return i
 
-def show(ip=None, key=None):
-    #iterate over all entries
-    if ip == None:
-        for ip in entries:
-            show_by_ip(ip, key)  
-    #one specific entry, identified by string IP address
-    elif ip in entries:
-        show_by_ip(ip, key)
-    #one specific entry, but IP not found
-    else:
-        print("*** The provided IP address does not match any current data entries.")           
+def hex_byteary_to_sum(data):
+    t = 0
+    n = 1
+    for c in data:
+        t += n * c
+        n *= 256
+    return t
 
 
 
+
+
+#for f in files:
+#    open_files.append(PCapFile(f))
+t = PCapFile(files[0])
